@@ -1,5 +1,6 @@
 ## Import packages
 
+from turtle import shape
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import style
@@ -32,11 +33,14 @@ b_vect = [0,0]
 N = len(a_vect) # number of tasks
 
 constr_A = np.array([[1,0],
-                     [0,1]])
+                     [0,1]], dtype="float32")
+constr_A_tf = tf.convert_to_tensor(constr_A)
 
 K = np.shape(constr_A)[0] # number of resources
+K_tf = tf.convert_to_tensor(K)
 
-C = np.array([2,2])
+C = np.array([2,2], dtype="float32")
+C_tf = tf.convert_to_tensor(C)
 
 type_obj = 0 # 0 is sqrt root, 1 is log
 
@@ -83,6 +87,13 @@ for a,b in zip(a_vect, b_vect):
         local_ders.append(lambda x, a=a: der_sqrt_func(a,x))
     else:
         local_ders.append(lambda x, a=a: der_log_func(a,x))
+
+def local_ders_tf(x):
+    tmpList = []
+    for i in range(N):
+        tmpList.append(local_ders[i](x[i]))
+    return tf.squeeze(tf.stack(tmpList, axis=0))
+
     
 def obj_func(x):
     s = 0
@@ -138,10 +149,10 @@ class Actor:
         return model
 
     def _pred1(self, NN, inp):
-        return NN(np.expand_dims(inp, axis = 0))[0]
+        return NN(tf.expand_dims(inp, axis=0))
 
     def get_action(self, s):
-        return self._pred1(self.NN, s).numpy()[0]
+        return self._pred1(self.NN, s)[0]
 
     def get_action_arr(self, states):
         return np.squeeze(np.array(self.NN(states)), axis=1)
@@ -149,12 +160,12 @@ class Actor:
     @profile
     def update(self, state_arr, action_arr, criticNN):
         with tf.GradientTape() as tape:
-            inputs = tf.convert_to_tensor(np.concatenate((state_arr, np.expand_dims(action_arr, axis=1)), axis=1))
+            inputs = tf.concat((state_arr, tf.expand_dims(action_arr, axis=1)), axis=1)
             Qs = criticNN(inputs)
             wrt_vars = tf.expand_dims(inputs[:,-1], axis=1)
-        batch_jac = tape.batch_jacobian(Qs, wrt_vars).numpy()
-        self.NN.compile(optimizer=keras.optimizers.SGD(learning_rate=alpha_theta), loss=cstmLoss(np.squeeze(batch_jac, axis=2)))
-        self.NN.train_on_batch(state_arr, np.zeros(np.shape(state_arr)[0],))
+        batch_jac = tape.batch_jacobian(Qs, wrt_vars)
+        self.NN.compile(optimizer=keras.optimizers.SGD(learning_rate=alpha_theta), loss=cstmLoss(tf.squeeze(batch_jac, axis=2)))
+        self.NN.train_on_batch(state_arr, tf.zeros(tf.shape(state_arr)[0],))
         Kbackend.clear_session()
 
 
@@ -182,13 +193,13 @@ class Critic:
         return NN(np.expand_dims(inp, axis = 0))[0]
 
     def Q_sa_trgt(self,states,actorNN):
-        actions = actorNN(states).numpy()
-        inputs = np.concatenate((states,actions), axis=1)
-        return self.target_NN(inputs).numpy()
+        actions = actorNN(states)
+        inputs = tf.concat((states,actions), axis=1)
+        return self.target_NN(inputs)
     
     @profile
     def update(self, s_arr, a_arr, y_arr):
-        inputs = np.concatenate((s_arr,np.expand_dims(a_arr, axis=1)), axis=1)
+        inputs = tf.concat((s_arr,tf.expand_dims(a_arr, axis=1)), axis=1)
         self.NN.train_on_batch(inputs, y_arr)
         
 
@@ -210,7 +221,7 @@ actors = [Actor() for _ in range(N)]
 critics = [Critic() for _ in range(N)]
 
 def g_tplus1(x_new):
-    return C - np.matmul(constr_A, x_new)
+    return C_tf - tf.squeeze(tf.matmul(constr_A_tf, tf.expand_dims(x_new,1)), axis=1)
 
 # return new state (new number of processed tasks is deterministic while number of incoming tasks is sampled from a uniform distribution)
 def state_trans(s,a):
@@ -219,32 +230,32 @@ def state_trans(s,a):
     lambdas = s[N:]
 
     # get x(t+1) + m(t+1)
-    x_new_float = x_plus_m * a
-    x_new = np.zeros((N,))
-    decimals = x_new_float - np.floor(x_new_float)
-    for i, (x, randomVar, dec) in enumerate(zip(x_new_float, np.random.uniform(np.zeros(N,), np.ones(N,), (N,)), decimals)):
-        if randomVar < dec:
-            x_new[i] = np.floor(x) + 1
-        else:
-            x_new[i] = np.floor(x)
+    x_new_float = tf.math.multiply(x_plus_m, tf.squeeze(a))
+    x_new = tf.zeros((N,))
+    x_new_floor = tf.floor(x_new_float)
+    decimals = x_new_float - x_new_floor
+    decision_vars = np.random.uniform(0,1,(N,))
+    addToFloor = 0.5 + 0.5 * tf.sign(tf.maximum(decimals - decision_vars, 0)) 
+    x_new = x_new + addToFloor
 
-    m_new = np.random.uniform(np.zeros((N,)), max_x+1, (N,)).astype(int)
+    m_new = tf.floor(tf.random.uniform((N,), np.zeros((N,)), max_x+1))
 
     # get lambda(t+1)
-    lambdas_new = np.maximum(np.ones((N,)), lambdas - delta_l * g_tplus1(x_new))
+    tmp_lambda = lambdas - delta_l * g_tplus1(x_new)
+    lambdas_new = tf.maximum(tf.ones((N,)), tmp_lambda)
 
-    return np.concatenate((x_new + m_new, lambdas_new)), x_new
+    return tf.concat(values=(x_new + m_new, lambdas_new), axis=0), x_new
 
-def reward_i(global_state, x_i, i):
+def rewards_parallel(global_state, xs):
     lambdas = global_state[N:]
-    dUidxi = local_ders[i](x_i)
-    lambdas_ais_prod = np.dot(lambdas, constr_A[:][i])
-    return - abs(dUidxi - lambdas_ais_prod)
+    dUidxis = local_ders_tf(xs)
+    lambdas_ais_prods = tf.squeeze(tf.matmul(tf.expand_dims(lambdas, axis=0), constr_A_tf), axis=0)
+    return - tf.math.abs(dUidxis - lambdas_ais_prods)
 
-def global2i_state(state, i):
-    xplusm_i = np.array([state[i]])
+def global2i_states(state):
     lambdas = state[N:]
-    return np.concatenate((xplusm_i, lambdas))
+    local_states = [tf.concat((state[i]*tf.ones((1,)), lambdas), axis=0) for i in range(N)]
+    return tf.stack(local_states, axis=0)
 
 def locals2global_state(local_states):
     xplusm = [el[0] for el in local_states]
@@ -262,17 +273,18 @@ def main():
     gamma = 0.99
     n_episodes = 20
     episode_length = 1000
-    replay_mem = [deque(maxlen = 5000) for _ in range(N)]
+    replay_mem = [tf.zeros((0,4+2*K)) for _ in range(N)]
 
     update_every = 50
     batch_size = 100
+    max_replay_mem_size = 5000
 
     storage_path = "/rds/general/user/eds17/home/optRLFiles/"
     os.makedirs(os.path.dirname(storage_path + "replay_mem.pkl"), exist_ok=True)
 
     for episode in range(n_episodes):
-        state = np.concatenate((np.random.uniform(np.zeros((N,)), 2*max_x+2, (N,)), np.zeros((K,))))
-        state = state.astype(int)
+        state = tf.concat((tf.random.uniform((N,), np.zeros((N,)), 2*max_x+2), tf.zeros((K,))), axis=0)
+        state = tf.floor(state)
         rs = [] 
 
         if episode % 10 == 0:
@@ -280,22 +292,29 @@ def main():
 
         for it in range(episode_length):
             # interaction with environment
-            local_states = [global2i_state(state, i) for i in range(N)]
-            local_actions = [actors[i].get_action(s_i) for i,s_i in enumerate(local_states)]
-            noisy_actions = np.random.normal(loc=local_actions, scale = a_std)
+            local_states = global2i_states(state)
+            local_actions_lst = [actors[i].get_action(local_states[i]) for i in range(N)]
+            local_actions = tf.stack(local_actions_lst, axis=0)
+            noisy_actions = tf.random.normal(shape=tf.shape(local_actions), mean=local_actions, stddev=a_std)
             new_state, xs = state_trans(state,noisy_actions)
-            r = [reward_i(new_state, x, i) for i,x in enumerate(xs)]
+            r = rewards_parallel(new_state, xs)
             rs.append(r)
-            new_local_states = [global2i_state(new_state, i) for i in range(N)]
+            new_local_states = global2i_states(new_state)
             for i in range(N):
-                replay_mem[i].append(np.concatenate([local_states[i], [noisy_actions[i]], [r[i]], new_local_states[i]]))
+                new_entry = tf.concat((local_states[i], noisy_actions[i]*tf.ones((1,)), r[i]*tf.ones((1,)), new_local_states[i]), axis=0)
+                replay_mem[i] = tf.concat((replay_mem[i], tf.expand_dims(new_entry, axis=0)), axis=0)
+                replay_mem_len = min(episode * episode_length + it + 1, max_replay_mem_size + 1)
+                if replay_mem_len > max_replay_mem_size:
+                    replay_mem[i] = replay_mem[i][1:]
+                    replay_mem_len = max_replay_mem_size
             state = new_state
 
             # update actors and critics
-            if it % update_every == 0 and len(replay_mem[0]) >= batch_size: 
+            if (it + 1) % update_every == 0 and episode * episode_length + it + 1 >= batch_size: 
                 for i in range(N):
                     # extract <S,A,R,S'> samples
-                    batch = np.array(random.sample(replay_mem[i], batch_size))
+                    choices = tf.constant(random.choices(range(replay_mem_len), k=batch_size), shape=(batch_size,1))
+                    batch = tf.gather_nd(replay_mem[i], choices)
                     state_arr = batch[:,:1+K]
                     action_arr = batch[:,1+K]
                     reward_arr = batch[:,2+K]
