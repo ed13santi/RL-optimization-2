@@ -51,7 +51,7 @@ delta_l = 0.01
 x_init = np.zeros((N,))
 lambda_init = np.zeros((K,))
 
-
+loc_state_size = K + 1
 
 
 
@@ -126,10 +126,10 @@ class cstmLoss(keras.losses.Loss):
 
 
 
-loc_state_size = K + 1
 
 class Actor:
-    def __init__(self):
+    def __init__(self, alpha_theta):        
+        self.learning_rate = alpha_theta
         self.NN = self._init_NN()
         self.target_NN = self._init_targetNN()
 
@@ -139,7 +139,7 @@ class Actor:
         model.add(layers.Dense(16, activation="relu", name="layer2"))
         model.add(layers.Dense(1, activation="sigmoid", name="layer3"))
 
-        model.compile(optimizer=keras.optimizers.SGD(learning_rate=alpha_theta), loss=tf.keras.losses.MeanSquaredError())
+        model.compile(optimizer=keras.optimizers.SGD(learning_rate=self.learning_rate), loss=tf.keras.losses.MeanSquaredError())
         return model
 
     def _init_targetNN(self):
@@ -158,7 +158,7 @@ class Actor:
         return np.squeeze(np.array(self.NN(states)), axis=1)
 
     @profile
-    def update(self, state_arr, action_arr, criticNN):
+    def update(self, state_arr, action_arr, criticNN, alpha_theta):
         with tf.GradientTape() as tape:
             inputs = tf.concat((state_arr, tf.expand_dims(action_arr, axis=1)), axis=1)
             Qs = criticNN(inputs)
@@ -177,7 +177,8 @@ class Actor:
 
 
 class Critic:
-    def __init__(self):
+    def __init__(self, alpha_theta):
+        self.learning_rate = alpha_theta
         self.NN = self._init_NN()
         self.target_NN = self._init_targetNN()
 
@@ -187,7 +188,7 @@ class Critic:
         model.add(layers.Dense(16, activation="relu", name="layer2"))
         model.add(layers.Dense(1, activation="sigmoid", name="layer3"))
 
-        model.compile(optimizer=keras.optimizers.SGD(learning_rate=alpha_thetaCritic), loss=tf.keras.losses.MeanSquaredError())
+        model.compile(optimizer=keras.optimizers.SGD(learning_rate=self.learning_rate), loss=tf.keras.losses.MeanSquaredError())
         return model
 
     def _init_targetNN(self):
@@ -218,26 +219,11 @@ class Critic:
 
 
 
-
-# calculate max possible x for each task
-tmp_constr_A = copy.deepcopy(constr_A).astype(float)
-tmp_constr_A[tmp_constr_A == 0] = 0.00001  # avoid divide by 0
-max_x = np.amin(C/tmp_constr_A, axis=0).astype(int)
-
-
-a_std = 0.01 # not sure what this should be
-alpha_theta = 0.001
-alpha_thetaCritic = 0.001
-
-# create list of actors and critics 
-actors = [Actor() for _ in range(N)]
-critics = [Critic() for _ in range(N)]
-
-def g_tplus1(x_new):
+def g_tplus1(x_new, C_tf, constr_A_tf):
     return C_tf - tf.squeeze(tf.matmul(constr_A_tf, tf.expand_dims(x_new,1)), axis=1)
 
 # return new state (new number of processed tasks is deterministic while number of incoming tasks is sampled from a uniform distribution)
-def state_trans(s,a):
+def state_trans(s,a, C_tf, constr_A_tf, max_x):
     # features of state
     x_plus_m = s[:N]
     lambdas = s[N:]
@@ -254,7 +240,7 @@ def state_trans(s,a):
     m_new = tf.floor(tf.random.uniform((N,), np.zeros((N,)), max_x+1))
 
     # get lambda(t+1)
-    tmp_lambda = lambdas - delta_l * g_tplus1(x_new)
+    tmp_lambda = lambdas - delta_l * g_tplus1(x_new, C_tf, constr_A_tf)
     lambdas_new = tf.maximum(tf.ones((N,)), tmp_lambda)
 
     return tf.concat(values=(x_new + m_new, lambdas_new), axis=0), x_new
@@ -295,6 +281,25 @@ def main():
     storage_path = "/rds/general/user/eds17/home/optRLFiles/"
     os.makedirs(os.path.dirname(storage_path + "replay_mem.pkl"), exist_ok=True)
 
+
+
+    
+
+
+    # calculate max possible x for each task
+    tmp_constr_A = copy.deepcopy(constr_A).astype(float)
+    tmp_constr_A[tmp_constr_A == 0] = 0.00001  # avoid divide by 0
+    max_x = np.amin(C/tmp_constr_A, axis=0).astype(int)
+
+
+    a_std = 0.01 # not sure what this should be
+    alpha_theta = 0.001
+    alpha_thetaCritic = 0.001
+
+    # create list of actors and critics 
+    actors = [Actor(alpha_theta) for _ in range(N)]
+    critics = [Critic(alpha_thetaCritic) for _ in range(N)]
+
     for episode in range(n_episodes):
         state = tf.concat((tf.random.uniform((N,), np.zeros((N,)), 2*max_x+2), tf.zeros((K,))), axis=0)
         state = tf.floor(state)
@@ -309,7 +314,7 @@ def main():
             local_actions_lst = [actors[i].get_action(local_states[i]) for i in range(N)]
             local_actions = tf.stack(local_actions_lst, axis=0)
             noisy_actions = tf.random.normal(shape=tf.shape(local_actions), mean=local_actions, stddev=a_std)
-            new_state, xs = state_trans(state,noisy_actions)
+            new_state, xs = state_trans(state, noisy_actions, C_tf, constr_A_tf, max_x)
             r = rewards_parallel(new_state, xs)
             rs.append(r)
             new_local_states = global2i_states(new_state)
@@ -341,7 +346,7 @@ def main():
 
                     # update actor and critic parameters
                     critics[i].update(state_arr, action_arr, y_arr)
-                    actors[i].update(state_arr, action_arr, critics[i].NN)
+                    actors[i].update(state_arr, action_arr, critics[i].NN, alpha_theta)
 
                     # update target networks
                     critics[i].update_target()
