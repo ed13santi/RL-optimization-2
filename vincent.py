@@ -21,7 +21,7 @@ import tensorflow.keras.backend as Kbackend
 import gc
 
 os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
-disable_eager_execution()
+#disable_eager_execution()
 
 
 ## Set parameters
@@ -166,7 +166,14 @@ class Actor:
         batch_jac = tape.batch_jacobian(Qs, wrt_vars)
         self.NN.compile(optimizer=keras.optimizers.SGD(learning_rate=alpha_theta), loss=cstmLoss(tf.squeeze(batch_jac, axis=2)))
         self.NN.train_on_batch(state_arr, tf.zeros(tf.shape(state_arr)[0],))
+        gc.collect()
         Kbackend.clear_session()
+
+    def update_target(self):
+        actor_weights = self.NN.get_weights()
+        target_actor_weights = self.target_NN.get_weights()
+        new_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(actor_weights, target_actor_weights)]
+        self.target_NN.set_weights(new_weights)
 
 
 class Critic:
@@ -201,6 +208,12 @@ class Critic:
     def update(self, s_arr, a_arr, y_arr):
         inputs = tf.concat((s_arr,tf.expand_dims(a_arr, axis=1)), axis=1)
         self.NN.train_on_batch(inputs, y_arr)
+
+    def update_target(self):
+        critic_weights = self.NN.get_weights()
+        target_critic_weights = self.target_NN.get_weights()
+        new_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(critic_weights, target_critic_weights)]
+        self.target_NN.set_weights(new_weights)
         
 
 
@@ -331,10 +344,8 @@ def main():
                     actors[i].update(state_arr, action_arr, critics[i].NN)
 
                     # update target networks
-                    critic_weights = critics[i].NN.get_weights()
-                    target_critic_weights = critics[i].target_NN.get_weights()
-                    new_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(critic_weights, target_critic_weights)]
-                    critics[i].target_NN.set_weights(new_weights)
+                    critics[i].update_target()
+                    actors[i].update_target()
 
                     actor_weights = actors[i].NN.get_weights()
                     target_actor_weights = actors[i].target_NN.get_weights()
