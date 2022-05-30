@@ -21,7 +21,7 @@ import tensorflow.keras.backend as Kbackend
 import gc
 
 os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
-#disable_eager_execution()
+disable_eager_execution()
 
 
 ## Set parameters
@@ -169,11 +169,30 @@ class Actor:
         gc.collect()
         Kbackend.clear_session()
 
+    
+    def _get_weights_cstm(self, model):
+        kernel_weights = []
+        bias_weights = []
+        for layer in model.layers:
+            layer_kernel = layer.weights[0]
+            layer_bias = layer.weights[1]
+            kernel_weights.append(tf.Variable(layer_kernel.initialized_value()))
+            bias_weights.append(tf.Variable(layer_bias.initialized_value()))
+        return kernel_weights, bias_weights
+
+    def _set_weights_cstm(self, model, kernel_weights, bias_weights):
+        for layer, kernel, bias in zip(model.layers, kernel_weights, bias_weights):
+            #Kbackend.set_value(layer.weights[0], kernel)
+            #Kbackend.set_value(layer.weights[1], bias)
+            layer.weights[0].assign(kernel)
+            layer.weights[1].assign(bias)
+
     def update_target(self):
-        actor_weights = self.NN.get_weights()
-        target_actor_weights = self.target_NN.get_weights()
-        new_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(actor_weights, target_actor_weights)]
-        self.target_NN.set_weights(new_weights)
+        actor_kernel_weights, actor_bias_weights = self._get_weights_cstm(self.NN)
+        target_actor_kernel_weights, target_actor_bias_weights = self._get_weights_cstm(self.target_NN)
+        new_kernel_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(actor_kernel_weights, target_actor_kernel_weights)]
+        new_bias_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(actor_bias_weights, target_actor_bias_weights)]
+        self._set_weights_cstm(self.target_NN, new_kernel_weights, new_bias_weights)
 
 
 class Critic:
@@ -210,11 +229,29 @@ class Critic:
         inputs = tf.concat((s_arr,tf.expand_dims(a_arr, axis=1)), axis=1)
         self.NN.train_on_batch(inputs, y_arr)
 
+    def _get_weights_cstm(self, model):
+        kernel_weights = []
+        bias_weights = []
+        for layer in model.layers:
+            layer_kernel = layer.weights[0]
+            layer_bias = layer.weights[1]
+            kernel_weights.append(tf.Variable(layer_kernel.initialized_value()))
+            bias_weights.append(tf.Variable(layer_bias.initialized_value()))
+        return kernel_weights, bias_weights
+
+    def _set_weights_cstm(self, model, kernel_weights, bias_weights):
+        for layer, kernel, bias in zip(model.layers, kernel_weights, bias_weights):
+            #Kbackend.set_value(layer.weights[0], kernel)
+            #Kbackend.set_value(layer.weights[1], bias)
+            layer.weights[0].assign(kernel)
+            layer.weights[1].assign(bias)
+
     def update_target(self):
-        critic_weights = self.NN.get_weights()
-        target_critic_weights = self.target_NN.get_weights()
-        new_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(critic_weights, target_critic_weights)]
-        self.target_NN.set_weights(new_weights)
+        critic_kernel_weights, critic_bias_weights = self._get_weights_cstm(self.NN)
+        target_critic_kernel_weights, target_critic_bias_weights = self._get_weights_cstm(self.target_NN)
+        new_kernel_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(critic_kernel_weights, target_critic_kernel_weights)]
+        new_bias_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(critic_bias_weights, target_critic_bias_weights)]
+        self._set_weights_cstm(self.target_NN, new_kernel_weights, new_bias_weights)
         
 
 
@@ -351,11 +388,6 @@ def main():
                     # update target networks
                     critics[i].update_target()
                     actors[i].update_target()
-
-                    actor_weights = actors[i].NN.get_weights()
-                    target_actor_weights = actors[i].target_NN.get_weights()
-                    new_weights = [0.1*el1+0.9*el2 for el1,el2 in zip(actor_weights, target_actor_weights)]
-                    actors[i].target_NN.set_weights(new_weights)
                         
         filehandler =  open(storage_path + "replay_mem", 'wb') 
         pickle.dump(replay_mem, filehandler)
