@@ -1,0 +1,2 @@
+model_checkpoint_path: "criticsTrgt_1"
+all_model_checkpoint_paths: "criticsTrgt_1"
