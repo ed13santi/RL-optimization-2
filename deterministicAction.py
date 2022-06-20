@@ -224,7 +224,7 @@ def main():
     update_every = 50
     batch_size = 100
 
-    storage_path = "/rds/general/user/eds17/home/RL_optimization/optRLFilesDet/"
+    storage_path = "/rds/general/user/eds17/home/RL-optimization-2/optRLFilesDet/"
     os.makedirs(os.path.dirname(storage_path + "replay_mem.pkl"), exist_ok=True)
 
     local_objs = []
