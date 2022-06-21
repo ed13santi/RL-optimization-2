@@ -78,8 +78,8 @@ class CstmLoss(keras.losses.Loss):
 
 
 class Actor:
-    def __init__(self, no_tasks, no_resources, alpha_theta):
-        self.state_size = no_tasks + no_resources
+    def __init__(self, no_tasks, alpha_theta):
+        self.state_size = no_tasks
         self.alpha_theta = alpha_theta
         self.NN = self._init_NN(self.state_size)
         self.target_NN = self._init_targetNN(self.state_size)
@@ -88,7 +88,7 @@ class Actor:
         model = tf.keras.Sequential()
         model.add(layers.Dense(16, input_shape=(state_size,), activation="relu", name="layer1"))
         model.add(layers.Dense(16, activation="relu", name="layer2"))
-        model.add(layers.Dense(self.state_size//2, activation="sigmoid", name="layer3"))
+        model.add(layers.Dense(self.state_size, activation="sigmoid", name="layer3"))
 
         model.compile(optimizer=keras.optimizers.SGD(learning_rate=self.alpha_theta), loss=tf.keras.losses.MeanSquaredError())
         return model
@@ -119,9 +119,9 @@ class Actor:
 
 
 class Critic:
-    def __init__(self, no_tasks, no_resources, alpha_thetaCritic):
+    def __init__(self, no_tasks, alpha_thetaCritic):
         self.alpha_thetaCritic = alpha_thetaCritic
-        self.net_input_size = no_tasks * 2 + no_resources
+        self.net_input_size = no_tasks * 2
         self.NN = self._init_NN(self.net_input_size)
         self.target_NN = self._init_targetNN(self.net_input_size)
 
@@ -160,20 +160,8 @@ def g_tplus1(x_new, constr_A, C):
     return C - np.matmul(constr_A, x_new)
 
 # return new state (new number of processed tasks is deterministic while number of incoming tasks is sampled from a uniform distribution)
-def state_trans(s, a, N, max_x, delta_l, constr_A, C):
-    # features of state
-    x_plus_m = s[:N]
-    lambdas = s[N:]
-
-    # get x(t+1) + m(t+1)
-    x_new = np.rint(x_plus_m * a)
-
-    m_new = np.random.uniform(np.zeros((N,)), max_x+1, (N,)).astype(int)
-
-    # get lambda(t+1)
-    lambdas_new = np.maximum(np.ones((N,)), lambdas - delta_l * g_tplus1(x_new, constr_A, C))
-
-    return np.concatenate((x_new + m_new, lambdas_new)), x_new
+def state_trans(a, max_x):
+    return np.rint(max_x * a)
 
 def reward(x, local_objs, constr_A, C, N):
     if np.any(np.multiply(constr_A, x) - C > 0):
@@ -230,7 +218,7 @@ def main():
     update_every = 50
     batch_size = 100
 
-    storage_path = "/rds/general/user/eds17/home/RL-optimization-2/optRLFilesCentralised/"
+    storage_path = "/rds/general/user/eds17/home/RL-optimization-2/centralisedACsaturated/"
     os.makedirs(os.path.dirname(storage_path + "replay_mem.pkl"), exist_ok=True)
 
     local_objs = []
@@ -246,8 +234,6 @@ def main():
             local_ders.append(lambda x, a=a: der_sqrt_func(a,x))
         else:
             local_ders.append(lambda x, a=a: der_log_func(a,x))
-
-    global_state_size = N + K
 
     # calculate max possible x for each task
     tmp_constr_A = copy.deepcopy(constr_A).astype(float)
@@ -267,8 +253,8 @@ def main():
             gc.collect()
             
          # create list of actors and critics 
-        actor = Actor(N, K, alpha_theta)
-        critic = Critic(N, K, alpha_thetaCritic)
+        actor = Actor(N, alpha_theta)
+        critic = Critic(N, alpha_thetaCritic)
 
         if episode != 0:
             print("NEW EPISODE!!!!")
@@ -280,7 +266,7 @@ def main():
             critic.target_NN.load_weights(storage_path + "criticsTrgt")
 
 
-        state = np.concatenate((np.random.uniform(np.zeros((N,)), 2*max_x+2, (N,)), np.zeros((K,))))
+        state = np.random.uniform(np.zeros((N,)), 2*max_x+2, (N,))
         state = state.astype(int)
         rs = [] 
         us = []
@@ -294,11 +280,11 @@ def main():
             # interaction with environment
             action = actor.get_action(state)
             noisy_action = np.clip(np.random.normal(loc=action, scale = a_std), 0, 1)
-            new_state, xs = state_trans(state, noisy_action, N, max_x, delta_l, constr_A, C)
-            r = reward(xs, local_objs, constr_A, C, N)
+            new_state = state_trans(noisy_action, max_x)
+            r = reward(new_state, local_objs, constr_A, C, N)
             rs.append(r)
             state_record.append(new_state)
-            x_record.append(xs)
+            x_record.append(new_state)
             replay_mem.append(np.concatenate([state, noisy_action, [r], new_state]))
             state = new_state
 
@@ -306,10 +292,10 @@ def main():
             if it % update_every == 0 and len(replay_mem) >= batch_size: 
                 # extract <S,A,R,S'> samples
                 batch = np.array(random.sample(replay_mem, batch_size))
-                state_arr = batch[:,:N+K]
-                action_arr = batch[:,N+K:2*N+K]
-                reward_arr = batch[:,2*N+K]
-                state_new_arr = batch[:,2*N+K+1:]
+                state_arr = batch[:,:N]
+                action_arr = batch[:,N:2*N]
+                reward_arr = batch[:,2*N]
+                state_new_arr = batch[:,2*N+1:]
 
                 # calculate Q values
                 q_next_arr = critic.Q_sa_trgt(state_new_arr, actor.target_NN) 
@@ -347,7 +333,7 @@ def main():
         pickle.dump(state_record, filehandler)
         os.makedirs(os.path.dirname(storage_path + "xs_{}".format(episode)), exist_ok=True)
         filehandler =  open(storage_path + "xs_{}".format(episode), 'wb')
-        pickle.dump(xs, filehandler)
+        pickle.dump(state, filehandler)
         actor.NN.save_weights(storage_path + "actor")
         actor.target_NN.save_weights(storage_path + "actorTrgt")
         critic.NN.save_weights(storage_path + "critics")
