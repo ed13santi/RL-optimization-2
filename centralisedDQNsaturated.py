@@ -232,7 +232,7 @@ def main():
         q_approximator = Q_approx(N, learning_rate, max_x)
 
         if episode != 0:
-            print("NEW EPISODE!!!!")
+            #print("NEW EPISODE!!!!")
             filehandler =  open(storage_path + "replay_mem", 'rb') 
             replay_mem = pickle.load(filehandler)
             q_approximator.NN.load_weights(storage_path + "q")
