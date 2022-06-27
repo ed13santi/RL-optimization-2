@@ -141,9 +141,6 @@ class Q_approx:
 def g_tplus1(x_new, constr_A, C):
     return C - np.matmul(constr_A, x_new)
 
-# return new state (new number of processed tasks is deterministic while number of incoming tasks is sampled from a uniform distribution)
-def state_trans(a, max_x):
-    return np.rint(max_x * a)
 
 def reward(x, local_objs, constr_A, C, N):
     if np.any(np.multiply(constr_A, x) - C > 0):
@@ -216,9 +213,7 @@ def main():
     max_x = np.amin(C/tmp_constr_A, axis=0).astype(int)
 
 
-    a_std = 0.01 # standard deviation of noise applied to action, not sure what value it should be
     learning_rate = 0.001
-
     epsilon = 1
     epsilon_decay = 0.999
 
@@ -252,7 +247,7 @@ def main():
         for it in range(episode_length):
             # interaction with environment
             action = q_approximator.get_action(state, epsilon)
-            new_state = state_trans(action, max_x)
+            new_state = action # in this case we pick the action to be directly the next state!!! Special case!!!
             r = reward(new_state, local_objs, constr_A, C, N)
             rs.append(r)
             state_record.append(new_state)
